@@ -1,15 +1,13 @@
 """
-שכבה 1 — Adapter ל-football-data.org (v4).
-חינמי, כולל מונדיאל 2026, מגבלה 10 קריאות/דקה (לא ליום!).
+שכבה 1 — Adapter ל-TheSportsDB (v1).
+מותאם למפתח הטסט החינמי '123' או למפתח פרימיום.
 
-אנדפוינטים:
-  GET /v4/competitions/WC/matches   → תוצאות כל המשחקים
-  GET /v4/competitions/WC/standings → מיקום בבית
-  GET /v4/competitions/WC/scorers   → מלכי שערים
+אנדפוינטים מרכזיים:
+  eventsseason.php?id=4344&s=2026 -> כל משחקי המונדיאל, תוצאות וכובשי שערים (מתוך פרטי המשחק)
 """
 
 import os
-import json
+import re
 import logging
 import requests
 from scoring import Tournament, Match, TeamState
@@ -17,53 +15,40 @@ from mappings import normalize_team, TEAM_ENG_TO_HEB, match_player, PLAYER_HEB_T
 
 log = logging.getLogger(__name__)
 
-API_KEY = os.environ.get("FOOTBALL_DATA_KEY", "")
-BASE_URL = "https://api.football-data.org/v4"
+# שליחת מפתח ה-API מתוך ה-env, ברירת מחדל לטסט החינמי 123
+API_KEY = os.environ.get("FOOTBALL_DATA_KEY", "123")
+BASE_URL = f"https://www.thesportsdb.com/api/v1/json/{API_KEY}"
 
-HEADERS = {
-    "X-Auth-Token": API_KEY,
-}
+# מזהה הליגה של ה-FIFA World Cup ב-TheSportsDB
+WORLD_CUP_LEAGUE_ID = "4344"
 
-# סטטוסים שמסמנים משחק שהסתיים
-FINISHED_STATUSES = {"FINISHED"}
+# סטטוסים ב-TheSportsDB המצביעים על משחק שהסתיים
+FINISHED_STATUSES = {"Match Finished", "FT"}
 
-# מיפוי שלב
+# מיפוי שלבים לפי שמות ה-Round או הסטטוס בתוך ה-API
 STAGE_MAP = {
-    "GROUP_STAGE":     "group",
-    "LAST_32":         "r32",
-    "ROUND_OF_32":     "r32",
-    "LAST_16":         "r16",
-    "ROUND_OF_16":     "r16",
-    "QUARTER_FINALS":  "qf",
-    "SEMI_FINALS":     "sf",
-    "THIRD_PLACE":     "third_place",
-    "FINAL":           "final",
+    "Group Stage":      "group",
+    "Round of 32":      "r32",
+    "Round of 16":      "r16",
+    "Quarter-Final":    "qf",
+    "Semi-Final":       "sf",
+    "3rd Place Playoff": "third_place",
+    "Final":            "final",
 }
 
 
 def _api_get(endpoint: str, params: dict = None) -> dict:
     url = f"{BASE_URL}/{endpoint}"
-    log.info(f"API call: {url}")
-    resp = requests.get(url, headers=HEADERS, params=params or {}, timeout=30)
+    log.info(f"TheSportsDB API call: {url} with params {params}")
+    resp = requests.get(url, params=params or {}, timeout=30)
     resp.raise_for_status()
-    remaining = resp.headers.get("X-Requests-Available", "?")
-    log.info(f"API OK — requests available this minute: {remaining}")
     return resp.json()
 
 
-def fetch_matches() -> list[dict]:
-    data = _api_get("competitions/WC/matches")
-    return data.get("matches", [])
-
-
-def fetch_standings() -> list[dict]:
-    data = _api_get("competitions/WC/standings")
-    return data.get("standings", [])
-
-
-def fetch_scorers() -> list[dict]:
-    data = _api_get("competitions/WC/scorers", {"limit": 100})
-    return data.get("scorers", [])
+def fetch_world_cup_data() -> list[dict]:
+    """מושך את כל המשחקים לעונת מונדיאל 2026"""
+    data = _api_get("eventsseason.php", {"id": WORLD_CUP_LEAGUE_ID, "s": "2026"})
+    return data.get("events", []) or []
 
 
 def _to_heb(api_name: str) -> str:
@@ -73,40 +58,44 @@ def _to_heb(api_name: str) -> str:
     return TEAM_ENG_TO_HEB.get(eng, eng)
 
 
-def _parse_match(match: dict) -> Match | None:
-    status = match.get("status", "")
+def _parse_match(event: dict) -> Match | None:
+    # בדיקה האם המשחק הסתיים
+    status = event.get("strStatus", "")
     if status not in FINISHED_STATUSES:
         return None
 
-    home_raw = match.get("homeTeam", {}).get("name", "")
-    away_raw = match.get("awayTeam", {}).get("name", "")
+    home_raw = event.get("strHomeTeam", "")
+    away_raw = event.get("strAwayTeam", "")
     home = _to_heb(home_raw)
     away = _to_heb(away_raw)
 
-    score = match.get("score", {})
-    duration = score.get("duration", "REGULAR")
+    # השגת גולים (TheSportsDB מחזיר כמחרוזת או מספר)
+    try:
+        home_goals = int(event.get("intHomeScore") or 0)
+        away_goals = int(event.get("intAwayScore") or 0)
+    except (ValueError, TypeError):
+        home_goals, away_goals = 0, 0
 
-    # DEBUG: מדפיס את התוצאה הגולמית מה-API
-    log.info(f"  RAW MATCH: {home_raw} vs {away_raw} | score={score}")
+    log.info(f"  RAW MATCH: {home_raw} vs {away_raw} | score={home_goals}-{away_goals}")
 
-    # תוצאה ברגיל
-    ft = score.get("fullTime", {})
-    home_goals = ft.get("home", 0) or 0
-    away_goals = ft.get("away", 0) or 0
-    log.info(f"  PARSED: {home} {home_goals}-{away_goals} {away}")
-
-    # הכרעה בפנדלים
+    # בדיקת הכרעה בפנדלים (TheSportsDB שומר לעיתים בתוך שדה ייעודי או הערות)
     decided_by = "regular"
     pen_winner = None
-    pen = score.get("penalties", {})
-    pen_home = pen.get("home")
-    pen_away = pen.get("away")
-    if pen_home is not None and pen_away is not None:
-        decided_by = "penalties"
-        pen_winner = home if pen_home > pen_away else away
+    
+    # ניסיון חילוץ מנצחת פנדלים במידה והיה תיקו והמשחק גמור
+    # הערה: במידת הצורך בגרסת פרימיום v2 יש שדות מובנים יותר לפנדלים
+    if home_goals == away_goals and event.get("strResult"):
+        result_text = event.get("strResult", "")
+        if "penalties" in result_text.lower():
+            decided_by = "penalties"
+            if home_raw.lower() in result_text.lower():
+                pen_winner = home
+            elif away_raw.lower() in result_text.lower():
+                pen_winner = away
 
-    stage_raw = match.get("stage", "GROUP_STAGE")
-    stage = STAGE_MAP.get(stage_raw, "group")
+    # זיהוי השלב
+    round_name = event.get("strRound", "Group Stage")
+    stage = STAGE_MAP.get(round_name, "group")
 
     return Match(
         home=home, away=away,
@@ -116,48 +105,67 @@ def _parse_match(match: dict) -> Match | None:
     )
 
 
-def _parse_standings(raw_standings: list[dict]) -> dict[str, TeamState]:
-    teams: dict[str, TeamState] = {}
-    for group in raw_standings:
-        if group.get("type") != "TOTAL":
+def _extract_goals_from_details(goal_details: str) -> list[str]:
+    """
+    מפרק מחרוזת שערים מהפורמט של TheSportsDB (למשל: "23':Harry Kane; 45':Raheem Sterling;")
+    ומחזיר רשימת שמות שחקנים שהבקיעו.
+    """
+    if not goal_details or goal_details == "None":
+        return []
+    
+    players = []
+    # פירוק לפי נקודה-פסיק או פסיק, תלוי באיך שהדאטה מוזן ב-API באותו רגע
+    parts = re.split(r'[;,\n]', goal_details)
+    for part in parts:
+        if not part.strip():
             continue
-        for entry in group.get("table", []):
-            raw_name = entry.get("team", {}).get("name", "")
-            name = _to_heb(raw_name)
-            rank = entry.get("position", 99)
-            pos = None
-            if rank == 1:
-                pos = "1st"
-            elif rank == 2:
-                pos = "2nd"
-            elif rank == 3:
-                pos = "3rd"
-            # football-data.org doesn't have a "qualified" flag per se,
-            # but we can infer from the competition progression.
-            # For now, mark qualified if they have a position — we'll refine
-            # based on knockout matches existing.
-            teams[name] = TeamState(
-                qualified_r32=False,  # will be set below
-                qualified_as=pos,
-            )
-    return teams
+        # הסרת דקות וסימנים מיוחדים (למשל "23': Name" או "Name 23'")
+        clean_part = re.sub(r"\d+'?", "", part)
+        clean_part = clean_part.replace(":", "").replace("'", "").strip()
+        if clean_part:
+            players.append(clean_part)
+            
+    return players
 
 
-def _detect_qualification(matches: list[Match], teams: dict[str, TeamState]):
-    """אם יש משחקי נוקאאוט, הקבוצות שמופיעות בהם עלו."""
+def build_tournament_from_api() -> Tournament:
+    log.info("Fetching World Cup 2026 data from TheSportsDB...")
+    raw_events = fetch_world_cup_data()
+
+    matches = []
+    api_extracted_scorers = {}  # שם שחקן באנגלית (מה-API) -> כמות שערים
+    teams = {}
+
+    for event in raw_events:
+        # 1. עיבוד משחק
+        parsed = _parse_match(event)
+        if parsed:
+            matches.append(parsed)
+            
+            # 2. חילוץ כובשי שערים מתוך פרטי המשחק הגמור
+            home_goals_str = event.get("strHomeGoalDetails", "")
+            away_goals_str = event.get("strAwayGoalDetails", "")
+            
+            all_match_scorers = (_extract_goals_from_details(home_goals_str) + 
+                                 _extract_goals_from_details(away_goals_str))
+            
+            for player_name in all_match_scorers:
+                api_extracted_scorers[player_name] = api_extracted_scorers.get(player_name, 0) + 1
+
+    log.info(f"Parsed {len(matches)} finished matches out of {len(raw_events)} total events")
+
+    # 3. בניית מצב עליית קבוצות על בסיס משחקי הנוקאאוט הקיימים
+    # (מכיוון שה-API החינמי לא כולל אנדפוינט standings ישיר למונדיאל ללא מפתח מורחב)
     knockout_teams = set()
     for m in matches:
         if m.stage in ("r32", "r16", "qf", "sf", "third_place", "final"):
             knockout_teams.add(m.home)
             knockout_teams.add(m.away)
+            
     for name in knockout_teams:
-        if name in teams:
-            teams[name].qualified_r32 = True
-        else:
-            teams[name] = TeamState(qualified_r32=True)
+        teams[name] = TeamState(qualified_r32=True)
 
-
-def _detect_deep_runs(matches: list[Match], teams: dict[str, TeamState]):
+    # עדכון הגעה לגמר וזכייה
     for m in matches:
         if m.stage == "final":
             teams.setdefault(m.home, TeamState()).reached_final = True
@@ -172,57 +180,14 @@ def _detect_deep_runs(matches: list[Match], teams: dict[str, TeamState]):
                 teams.setdefault(winner, TeamState()).won_cup = True
                 teams[winner].reached_final = True
 
-
-def _parse_scorers(raw: list[dict]) -> list[dict]:
-    scorers = []
-    for entry in raw:
-        player = entry.get("player", {})
-        goals = entry.get("goals", 0) or 0
-        scorers.append({
-            "name": player.get("name", ""),
-            "goals": goals,
-        })
-    return scorers
-
-
-def build_tournament_from_api() -> Tournament:
-    log.info("Fetching matches...")
-    raw_matches = fetch_matches()
-
-    log.info("Fetching standings...")
-    raw_standings = fetch_standings()
-
-    log.info("Fetching scorers...")
-    raw_scorers = fetch_scorers()
-
-    # פירוק משחקים
-    matches = []
-    for m in raw_matches:
-        parsed = _parse_match(m)
-        if parsed:
-            matches.append(parsed)
-    log.info(f"Parsed {len(matches)} finished matches out of {len(raw_matches)} total")
-
-    # פירוק טבלאות בתים
-    teams = _parse_standings(raw_standings)
-
-    # זיהוי עלייה מנוקאאוט
-    _detect_qualification(matches, teams)
-
-    # זיהוי הגעה לגמר/זכייה
-    _detect_deep_runs(matches, teams)
-
-    # פירוק מבקיעים
-    scorers_list = _parse_scorers(raw_scorers)
-
-    # בניית player_goals: מיפוי שם עברי → גולים
+    # 4. מיפוי כובשי השערים לשמות בעברית עבור מנוע הניקוד
     player_goals = {}
     for heb_name in PLAYER_HEB_TO_SEARCH:
-        for api_entry in scorers_list:
-            if match_player(api_entry["name"], heb_name):
-                player_goals[heb_name] = api_entry["goals"]
-                log.info(f"  Player match: {heb_name} = {api_entry['name']} ({api_entry['goals']} goals)")
-                break
+        player_goals[heb_name] = 0
+        for api_player_name, goals in api_extracted_scorers.items():
+            if match_player(api_player_name, heb_name):
+                player_goals[heb_name] += goals
+                log.info(f"  Player match: {heb_name} = {api_player_name} ({goals} goals parsed)")
 
     t = Tournament(
         matches=matches,
@@ -231,6 +196,6 @@ def build_tournament_from_api() -> Tournament:
         golden_boot=None,
     )
 
-    log.info(f"Tournament built: {len(t.matches)} matches, {len(t.teams)} teams, "
+    log.info(f"Tournament built: {len(t.matches)} matches, {len(t.teams)} teams tracked via knockout, "
              f"{len(t.player_goals)} players tracked")
     return t
