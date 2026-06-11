@@ -154,18 +154,34 @@ def score_participant(p: Picks, t: Tournament) -> dict:
 
 
 def build_leaderboard(picks: list, t: Tournament, prev_rank: dict | None = None) -> list:
-    """מחזיר את הטבלה כפי שהפרונט יקרא מ-Supabase. ממוין לפי total יורד."""
+    """מחזיר את הטבלה כפי שהפרונט יקרא מ-Supabase. ממוין לפי total יורד, עם תמיכה במיקומים זהים בתיקו."""
     rows = [score_participant(p, t) for p in picks]
     prev_rank = prev_rank or {}
-    # מיון: ניקוד יורד, ובתיקו — לפי הדירוג הקודם (שומר על הסדר המקורי)
+    
+    # מיון ראשוני: ניקוד יורד, ובתיקו — לפי הדירוג הקודם (לשמירת יציבות)
     max_rank = len(rows) + 1
     rows.sort(key=lambda r: (-r["total"], prev_rank.get(r["name"], max_rank)))
+    
     now = datetime.now(timezone.utc).isoformat()
-    for i, r in enumerate(rows, start=1):
-        r["rank"] = i
+    
+    # חישוב דירוג (Rank) חכם עם תמיכה בשוויון נקודות
+    for i, r in enumerate(rows):
+        if i == 0:
+            # המשתתף הראשון תמיד מקום 1
+            r["rank"] = 1
+        else:
+            # אם הניקוד שלו שווה בדיוק למשתתף שלפניו, הוא מקבל את אותו הדירוג
+            if r["total"] == rows[i - 1]["total"]:
+                r["rank"] = rows[i - 1]["rank"]
+            else:
+                # אחרת, הוא מקבל את המיקום הריאלי שלו ברשימה (אינדקס + 1)
+                r["rank"] = i + 1
+                
+        # חישוב תנועה (movement) ביחס לדירוג הישן
         old = prev_rank.get(r["name"])
-        r["movement"] = 0 if old is None else old - i   # חיובי = עלייה
+        r["movement"] = 0 if old is None else old - r["rank"]   # חיובי = עלייה במיקום
         r["updated_at"] = now
+        
     return rows
 
 
