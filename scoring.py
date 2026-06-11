@@ -156,8 +156,10 @@ def score_participant(p: Picks, t: Tournament) -> dict:
 def build_leaderboard(picks: list, t: Tournament, prev_rank: dict | None = None) -> list:
     """מחזיר את הטבלה כפי שהפרונט יקרא מ-Supabase. ממוין לפי total יורד."""
     rows = [score_participant(p, t) for p in picks]
-    rows.sort(key=lambda r: (-r["total"], r["name"]))
     prev_rank = prev_rank or {}
+    # מיון: ניקוד יורד, ובתיקו — לפי הדירוג הקודם (שומר על הסדר המקורי)
+    max_rank = len(rows) + 1
+    rows.sort(key=lambda r: (-r["total"], prev_rank.get(r["name"], max_rank)))
     now = datetime.now(timezone.utc).isoformat()
     for i, r in enumerate(rows, start=1):
         r["rank"] = i
