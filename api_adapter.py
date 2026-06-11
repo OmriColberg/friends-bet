@@ -86,10 +86,14 @@ def _parse_match(match: dict) -> Match | None:
     score = match.get("score", {})
     duration = score.get("duration", "REGULAR")
 
+    # DEBUG: מדפיס את התוצאה הגולמית מה-API
+    log.info(f"  RAW MATCH: {home_raw} vs {away_raw} | score={score}")
+
     # תוצאה ברגיל
     ft = score.get("fullTime", {})
     home_goals = ft.get("home", 0) or 0
     away_goals = ft.get("away", 0) or 0
+    log.info(f"  PARSED: {home} {home_goals}-{away_goals} {away}")
 
     # הכרעה בפנדלים
     decided_by = "regular"
