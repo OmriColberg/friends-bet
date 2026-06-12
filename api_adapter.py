@@ -117,15 +117,14 @@ def _to_heb(api_name: str) -> str:
 def _parse_match(game: dict) -> Match | None:
     # בדיקה האם המשחק הסתיים (לפי השדות שחוזרים ב-API הכללי)
     is_finished = (
-        game.get("finished") == "true" or 
-        game.get("finished") is True or 
+        str(game.get("finished", "")).lower() == "true" or
         game.get("time_elapsed") == "finished"
     )
     if not is_finished:
         return None
 
-    home_raw = game.get("home_team_en", "")
-    away_raw = game.get("away_team_en", "")
+    home_raw = game.get("home_team_name_en", "") or game.get("home_team_en", "")
+    away_raw = game.get("away_team_name_en", "") or game.get("away_team_en", "")
     home = _to_heb(home_raw)
     away = _to_heb(away_raw)
 
@@ -174,29 +173,21 @@ def build_tournament_from_api() -> Tournament:
         if parsed:
             matches.append(parsed)
             
-            # בדיקה אם מדובר במשחק שהסתיים ונכבשו בו שערים לפני שפונים ל-API המורחב
-            game_id = game.get("id")
-            home_score = int(game.get("home_score", 0) or 0)
-            away_score = int(game.get("away_score", 0) or 0)
-            
-            if game_id and (home_score > 0 or away_score > 0):
-                detailed_game = fetch_game_details(str(game_id))
-                if not detailed_game:
-                    DIAG["n_detail_fail"] += 1  # סימן מובהק ל-rate-limit מתחיל
-                time.sleep(0.3)  # ריווח קל בין קריאות פרטים — מפחית לחץ rate-limit על ה-API החינמי
-                
-                # שליפת מערך המבקיעים מתוך פרטי המשחק (תומך בשדות goals או events של ה-API)
-                goals_events = detailed_game.get("goals", []) or detailed_game.get("events", [])
-                if isinstance(goals_events, list):
-                    for goal in goals_events:
-                        player_name = ""
-                        if isinstance(goal, dict):
-                            player_name = goal.get("player_name") or goal.get("player") or ""
-                        elif isinstance(goal, str):
-                            player_name = goal
-                        
-                        if player_name:
-                            api_extracted_scorers[player_name] = api_extracted_scorers.get(player_name, 0) + 1
+            # כובשי שערים נמצאים ישירות ב-game object (home_scorers / away_scorers)
+            # פורמט: '{"J. Quiñones 9\'","R. Jiménez 67\'"}'  או  "null"
+            for field in ("home_scorers", "away_scorers"):
+                raw = game.get(field, "") or ""
+                if not raw or raw.lower() == "null":
+                    continue
+                # מנקים סוגריים מסולסלים ומפצלים לפי פסיק
+                raw = raw.strip("{}")
+                for entry in raw.split('","'):
+                    entry = entry.strip().strip('"').strip("'")
+                    # מסירים "67'" או "9'" מהסוף — מספר + גרש
+                    import re
+                    name = re.sub(r"\s+\d+['′]?\s*$", "", entry).strip()
+                    if name:
+                        api_extracted_scorers[name] = api_extracted_scorers.get(name, 0) + 1
 
     log.info(f"Processed {len(matches)} finished matches out of {len(raw_games)} total games")
     DIAG["n_finished"] = len(matches)
