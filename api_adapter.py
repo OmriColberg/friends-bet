@@ -7,6 +7,7 @@ API חינמי, פתוח לחלוטין וללא צורך במפתח (API Key).
   GET https://worldcup26.ir/get/game/{id}  -> מידע מורחב על משחק ספציפי כולל מערך כובשי שערים
 """
 
+import time
 import logging
 import requests
 from scoring import Tournament, Match, TeamState
@@ -15,6 +16,33 @@ from mappings import normalize_team, TEAM_ENG_TO_HEB, match_player, PLAYER_HEB_T
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://worldcup26.ir/get"
+
+
+class APIFetchError(Exception):
+    """נזרק כשלא ניתן לקרוא את ה-API. מסמן 'מצב לא ידוע' — לא 'מצב אפס'.
+    קריטי: בלי זה, כל כשל רשת מתחזה ל'אין משחקים' ומאפס את כל הלוח."""
+    pass
+
+
+# ──────────────── Diagnostics: מה ה-API באמת החזיר בריצה הזו ────────────────
+# נאסף לאורך הריצה, ונקרא ע"י main.py כדי לכתוב שורת sync_log + להדפיס סיכום.
+DIAG: dict = {}
+
+
+def _reset_diag():
+    DIAG.clear()
+    DIAG.update({
+        "fetch_ok": None,      # האם /games נקרא בהצלחה
+        "http_status": None,   # קוד HTTP אחרון של /games
+        "attempts": 0,         # כמה ניסיונות נדרשו
+        "raw_bytes": 0,        # גודל ה-payload הגולמי
+        "n_games": 0,          # כמה משחקים חזרו בסך הכל
+        "n_finished": 0,       # כמה נותחו כ"הסתיימו"
+        "n_scorers": 0,        # כמה אירועי גול נאספו
+        "n_detail_fail": 0,    # כמה קריאות פרטים נכשלו (סימן ל-rate-limit)
+        "error": None,         # הודעת השגיאה אם נכשל
+        "raw_sample": None,    # 400 התווים הראשונים — כשהקריאה נכשלה או חזרה ריקה
+    })
 
 # מיפוי השלבים מה-API למנוע הניקוד הפנימי של הטורניר
 STAGE_MAP = {
@@ -28,18 +56,42 @@ STAGE_MAP = {
 }
 
 
-def fetch_matches() -> list[dict]:
-    """מושך את רשימת כל המשחקים הכללית"""
+def fetch_matches(retries: int = 3, backoff: float = 2.0) -> list[dict]:
+    """מושך את רשימת כל המשחקים. נכשל בקול (raise) במקום להחזיר רשימה ריקה,
+    כדי שהאורקסטרטור יבחין בין 'כשל קריאה' לבין 'אין משחקים שהסתיימו'.
+    לאורך הדרך ממלא את DIAG כדי שנבין בדיוק מה ה-API החזיר."""
     url = f"{BASE_URL}/games"
     log.info(f"Calling public World Cup API: {url}")
-    try:
-        resp = requests.get(url, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("games", []) or []
-    except Exception as e:
-        log.error(f"Failed to fetch games from worldcup26.ir: {e}")
-        return []
+    last_err = None
+    for attempt in range(1, retries + 1):
+        DIAG["attempts"] = attempt
+        try:
+            resp = requests.get(url, timeout=20)
+            DIAG["http_status"] = resp.status_code
+            DIAG["raw_bytes"] = len(resp.content or b"")
+            resp.raise_for_status()
+            data = resp.json()
+            games = data.get("games", []) or []
+            DIAG["n_games"] = len(games)
+            DIAG["fetch_ok"] = True
+            # אם 200 אבל ריק — שומרים דגימה כדי להבין למה (זה התרחיש שמאפס את הלוח)
+            if not games:
+                DIAG["raw_sample"] = (resp.text or "")[:400]
+                log.warning(f"/games returned 200 but ZERO games. status={resp.status_code} bytes={DIAG['raw_bytes']}")
+            return games
+        except Exception as e:
+            last_err = e
+            # ניסיון ללכוד גוף תשובה גם בכשל (למשל HTML של Cloudflare/429)
+            body = getattr(getattr(e, "response", None), "text", None)
+            if body:
+                DIAG["raw_sample"] = body[:400]
+            log.warning(f"fetch_matches attempt {attempt}/{retries} failed: {e}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)  # backoff לינארי: 2s, 4s
+    # מיצינו את הניסיונות — מסמנים כשל במקום להעמיד פנים שאין משחקים
+    DIAG["fetch_ok"] = False
+    DIAG["error"] = str(last_err)
+    raise APIFetchError(f"Could not fetch games after {retries} attempts: {last_err}")
 
 
 def fetch_game_details(game_id: str) -> dict:
@@ -104,6 +156,7 @@ def _parse_match(game: dict) -> Match | None:
 
 
 def build_tournament_from_api() -> Tournament:
+    _reset_diag()
     raw_games = fetch_matches()
 
     matches = []
@@ -122,6 +175,9 @@ def build_tournament_from_api() -> Tournament:
             
             if game_id and (home_score > 0 or away_score > 0):
                 detailed_game = fetch_game_details(str(game_id))
+                if not detailed_game:
+                    DIAG["n_detail_fail"] += 1  # סימן מובהק ל-rate-limit מתחיל
+                time.sleep(0.3)  # ריווח קל בין קריאות פרטים — מפחית לחץ rate-limit על ה-API החינמי
                 
                 # שליפת מערך המבקיעים מתוך פרטי המשחק (תומך בשדות goals או events של ה-API)
                 goals_events = detailed_game.get("goals", []) or detailed_game.get("events", [])
@@ -137,6 +193,8 @@ def build_tournament_from_api() -> Tournament:
                             api_extracted_scorers[player_name] = api_extracted_scorers.get(player_name, 0) + 1
 
     log.info(f"Processed {len(matches)} finished matches out of {len(raw_games)} total games")
+    DIAG["n_finished"] = len(matches)
+    DIAG["n_scorers"] = sum(api_extracted_scorers.values())
 
     # זיהוי עולות שלב לפי השתתפות בפועל במשחקי נוקאאוט בטורניר
     knockout_teams = set()
