@@ -11,12 +11,13 @@ Main — הסקריפט שרץ בכל מחזור cron.
 import os
 import sys
 import json
+import time
 import logging
 from datetime import datetime, timezone
 
 import requests
 from scoring import Picks, Tournament, build_leaderboard
-from api_adapter import build_tournament_from_api
+from api_adapter import build_tournament_from_api, APIFetchError, DIAG
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,33 +80,119 @@ def read_current_ranks() -> dict[str, int]:
     return {r["name"]: r["rank"] for r in raw}
 
 
+def read_current_max_total() -> float:
+    """כמה 'מאוכלס' הלוח הקיים? משמש כשמירה מפני דריסה באפסים."""
+    try:
+        raw = sb_get("leaderboard", {"select": "total"})
+        return max((float(r.get("total") or 0) for r in raw), default=0.0)
+    except Exception as e:
+        log.warning(f"Could not read current leaderboard totals: {e}")
+        return 0.0
+
+
+def write_sync_log(record: dict):
+    """כותב שורת אבחון אחת לטבלת sync_log ב-Supabase. Fail-safe לחלוטין:
+    אם הטבלה לא קיימת או הכתיבה נכשלת — רק מזהיר, לעולם לא מפיל את הריצה."""
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/sync_log"
+        headers = {**SB_HEADERS, "Prefer": "return=minimal"}
+        resp = requests.post(url, headers=headers, json=[record], timeout=10)
+        if resp.status_code >= 400:
+            log.warning(f"sync_log write returned {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        log.warning(f"Could not write sync_log (non-fatal): {e}")
+
+
+def print_diag_summary(record: dict):
+    """מדפיס בלוק סיכום ברור — מופיע בלוגי GitHub Actions לכל ריצה."""
+    log.info("┌─────────────── SYNC DIAGNOSTICS ───────────────")
+    log.info(f"│ decision     : {record['decision']}")
+    log.info(f"│ fetch_ok     : {record['fetch_ok']}  http={record['http_status']}  attempts={record['attempts']}")
+    log.info(f"│ games        : {record['n_games']} total → {record['n_finished']} finished")
+    log.info(f"│ scorers      : {record['n_scorers']}  detail_fails={record['n_detail_fail']}")
+    log.info(f"│ leaderboard  : prev_max={record['prev_max']} → new_max={record['new_max']}")
+    log.info(f"│ duration     : {record['duration_ms']} ms")
+    if record.get("error"):
+        log.info(f"│ ERROR        : {record['error']}")
+    if record.get("raw_sample"):
+        log.info(f"│ raw_sample   : {record['raw_sample'][:200]}")
+    log.info("└────────────────────────────────────────────────")
+
+
 def run():
     """ריצה אחת של המחזור."""
+    t0 = time.time()
     log.info("=" * 60)
     log.info("Starting leaderboard update cycle")
 
-    # 1. קריאת בחירות
-    picks = read_picks()
-    if not picks:
-        log.warning("No picks found, aborting")
-        return
+    decision = "UNKNOWN"
+    prev_max = 0.0
+    new_max = 0.0
 
-    # 2. דירוג קודם (ל-movement)
-    prev_rank = read_current_ranks()
+    try:
+        # 1. קריאת בחירות
+        picks = read_picks()
+        if not picks:
+            decision = "SKIP_NO_PICKS"
+            log.warning("No picks found, aborting")
+            return
 
-    # 3. מצב הטורניר מ-API
-    tournament = build_tournament_from_api()
+        # 2. דירוג קודם (ל-movement) + כמה הלוח הקיים מאוכלס (לשמירה)
+        prev_rank = read_current_ranks()
+        prev_max = read_current_max_total()
 
-    # 4. חישוב ניקוד
-    rows = build_leaderboard(picks, tournament, prev_rank)
+        # 3. מצב הטורניר מ-API — אם הקריאה נכשלה, מדלגים על הכתיבה כדי לא לאפס את הלוח
+        try:
+            tournament = build_tournament_from_api()
+        except APIFetchError as e:
+            decision = "SKIP_FETCH_FAILED"
+            log.error(f"API fetch failed — SKIPPING write to avoid wiping leaderboard. {e}")
+            return
 
-    # 5. כתיבה ל-Supabase
-    sb_upsert("leaderboard", rows)
+        # 4. שמירה על בסיס איכות הקריאה — לא על בסיס גובה הניקוד.
+        #    דלג רק כש-/games החזיר 200 עם payload ריק (קריאה רעה). כך לוח
+        #    תיקו/אפס לגיטימי כן נכתב — וזה מה שמתקן נתונים ישנים תקועים.
+        #    (כשל רשת כבר נתפס למעלה כ-APIFetchError.)
+        if DIAG.get("n_games", 0) == 0:
+            decision = "SKIP_EMPTY_READ"
+            log.error(
+                "API returned 200 but ZERO games (empty/garbage payload) — "
+                f"raw_sample={DIAG.get('raw_sample')!r}. SKIPPING write to protect leaderboard."
+            )
+            return
 
-    log.info(f"Done — {len(rows)} rows updated. Top 3:")
-    for r in rows[:3]:
-        log.info(f"  #{r['rank']} {r['name']} — {r['total']} pts")
-    log.info("=" * 60)
+        # 5. חישוב ניקוד + כתיבה
+        rows = build_leaderboard(picks, tournament, prev_rank)
+        new_max = max((r["total"] for r in rows), default=0.0)
+        sb_upsert("leaderboard", rows)
+        decision = "WRITE"
+
+        log.info(f"Done — {len(rows)} rows updated. Top 3:")
+        for r in rows[:3]:
+            log.info(f"  #{r['rank']} {r['name']} — {r['total']} pts")
+
+    finally:
+        # תיעוד אבחון תמיד — בכל מסלול (כתיבה או דילוג), כדי שנבין למה
+        record = {
+            "ran_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "decision": decision,
+            "fetch_ok": DIAG.get("fetch_ok"),
+            "http_status": DIAG.get("http_status"),
+            "attempts": DIAG.get("attempts", 0),
+            "raw_bytes": DIAG.get("raw_bytes", 0),
+            "n_games": DIAG.get("n_games", 0),
+            "n_finished": DIAG.get("n_finished", 0),
+            "n_scorers": DIAG.get("n_scorers", 0),
+            "n_detail_fail": DIAG.get("n_detail_fail", 0),
+            "prev_max": prev_max,
+            "new_max": new_max,
+            "error": DIAG.get("error"),
+            "raw_sample": DIAG.get("raw_sample"),
+        }
+        print_diag_summary(record)
+        write_sync_log(record)
+        log.info("=" * 60)
 
 
 if __name__ == "__main__":
