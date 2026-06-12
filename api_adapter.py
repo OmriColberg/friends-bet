@@ -129,6 +129,12 @@ def _parse_match(game: dict) -> Match | None:
     home = _to_heb(home_raw)
     away = _to_heb(away_raw)
 
+    # משחקי placeholder — הנבחרות עדיין לא נקבעו (TBD). מתעלמים מהם לחלוטין.
+    # ה-API מחזיר אותם כ"הסתיים" אבל אין בהם נתון אמיתי, וקריאת game/{id} עליהם מחזירה 400.
+    if home == "TBD" or away == "TBD":
+        log.info(f"  SKIPPING placeholder match (TBD): id={game.get('id')} score={game.get('home_score')}-{game.get('away_score')}")
+        return None
+
     try:
         home_goals = int(game.get("home_score", 0))
         away_goals = int(game.get("away_score", 0))
