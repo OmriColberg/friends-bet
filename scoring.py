@@ -139,7 +139,7 @@ def score_participant(p: Picks, t: Tournament) -> dict:
     conceder = 0.5 * _goals_against(p.conceder, t)
     top = 0.5 * t.player_goals.get(p.top_scorer, 0) + (1 if t.golden_boot == p.top_scorer else 0)
 
-    total = a + b + c + d + scorer + conceder + top
+    total = round(a + b + c + d + scorer + conceder + top, 1)
     return {
         "name": p.name,
         "tier_a": p.tier_a, "tier_a_pts": a,
