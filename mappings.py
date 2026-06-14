@@ -117,7 +117,7 @@ PLAYER_HEB_TO_SEARCH = {
     "ליונל מסי":        ["Messi", "L. Messi", "Lionel Messi"],
     "מיקל אויארסבאל":  ["Oyarzabal", "M. Oyarzabal", "Mikel Oyarzabal"],
     "לאוטרו מרטינס":   ["Martínez", "Martinez", "L. Martínez", "Lautaro Martínez", "Lautaro Martinez"],
-    "ויניסיוס ז'וניור": ["Vinícius", "Vinicius", "Vinícius Jr", "Vinicius Jr", "Vinícius Júnior", "Vinicius Junior"],
+    "ויניסיוס ז'וניור": ["Vinícius", "Vinicius", "Vinícius Jr", "Vinicius Jr", "Vinícius Júnior", "Vinicius Junior", "V. Júnior", "V. Junior", "V. Vinícius", "V. Vinicius"],
     "לירוי סאנה":       ["Sané", "Sane", "L. Sané", "L. Sane", "Leroy Sané", "Leroy Sane"],
     "כריסטיאנו רונאלדו": ["Ronaldo", "C. Ronaldo", "Cristiano Ronaldo"],
     "עוסמאן דמבלה":     ["Dembélé", "Dembele", "O. Dembélé", "O. Dembele", "Ousmane Dembélé"],
