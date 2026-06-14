@@ -74,10 +74,11 @@ def read_picks() -> list[Picks]:
     return picks
 
 
-def read_current_ranks() -> dict[str, int]:
-    """קורא את הדירוג הנוכחי (לפני העדכון) כדי לחשב movement."""
-    raw = sb_get("leaderboard", {"select": "name,rank"})
-    return {r["name"]: r["rank"] for r in raw}
+def read_current_ranks() -> dict[str, dict]:
+    """קורא את הדירוג וה-movement הנוכחיים (לפני העדכון).
+    מחזיר {name: {"rank": int, "movement": int}}."""
+    raw = sb_get("leaderboard", {"select": "name,rank,movement"})
+    return {r["name"]: {"rank": r["rank"], "movement": r.get("movement", 0) or 0} for r in raw}
 
 
 def read_current_max_total() -> float:
@@ -137,8 +138,8 @@ def run():
             log.warning("No picks found, aborting")
             return
 
-        # 2. דירוג קודם (ל-movement) + כמה הלוח הקיים מאוכלס (לשמירה)
-        prev_rank = read_current_ranks()
+        # 2. מצב קודם (rank + movement) + כמה הלוח הקיים מאוכלס (לשמירה)
+        prev_state = read_current_ranks()
         prev_max = read_current_max_total()
 
         # 3. מצב הטורניר מ-API — אם הקריאה נכשלה, מדלגים על הכתיבה כדי לא לאפס את הלוח
@@ -162,7 +163,7 @@ def run():
             return
 
         # 5. חישוב ניקוד + כתיבה
-        rows = build_leaderboard(picks, tournament, prev_rank)
+        rows = build_leaderboard(picks, tournament, prev_state)
         new_max = max((r["total"] for r in rows), default=0.0)
         sb_upsert("leaderboard", rows)
 
