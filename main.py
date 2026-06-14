@@ -165,6 +165,16 @@ def run():
         rows = build_leaderboard(picks, tournament, prev_rank)
         new_max = max((r["total"] for r in rows), default=0.0)
         sb_upsert("leaderboard", rows)
+
+        # 6. כתיבת סטטוס משחקים חיים לטבלת live_status
+        live_displays = DIAG.get("live_displays", [])
+        sb_upsert("live_status", [{
+            "id": 1,  # שורה יחידה — תמיד תידרס
+            "matches": live_displays,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }])
+        if live_displays:
+            log.info(f"Live matches: {live_displays}")
         decision = "WRITE"
 
         log.info(f"Done — {len(rows)} rows updated. Top 3:")
