@@ -165,32 +165,62 @@ def build_tournament_from_api() -> Tournament:
     raw_games = fetch_matches()
 
     matches = []
-    api_extracted_scorers = {}  # מפה זמנית: שם שחקן באנגלית -> כמות שערים מצטברת
+    live_matches = []   # משחקים פעילים כרגע — לסימון בלוח
+    api_extracted_scorers = {}
     teams = {}
 
     for game in raw_games:
+        # משחק חי — מחשבים ניקוד חלקי ושומרים לסימון
+        is_live = str(game.get("time_elapsed", "")).lower() == "live"
+        if is_live:
+            parsed_live = _parse_match_live(game)
+            if parsed_live:
+                live_matches.append(parsed_live)
+                matches.append(parsed_live)
+
         parsed = _parse_match(game)
         if parsed:
             matches.append(parsed)
-            
-            # כובשי שערים נמצאים ישירות ב-game object (home_scorers / away_scorers)
-            # פורמט: '{"J. Quiñones 9\'","R. Jiménez 67\'"}'  או  "null"
+
+        # כובשי שערים — גם ממשחקים גמורים וגם מחיים
+        if parsed or is_live:
             for field in ("home_scorers", "away_scorers"):
                 raw = game.get(field, "") or ""
                 if not raw or raw.lower() == "null":
                     continue
-                # מנקים סוגריים מסולסלים ומפצלים לפי פסיק
                 raw = raw.strip("{}")
                 for entry in raw.split('","'):
                     entry = entry.strip().strip('"').strip("'")
-                    # מסירים "67'" או "9'" מהסוף — מספר + גרש
                     import re
                     name = re.sub(r"\s+\d+['′]?\s*$", "", entry).strip()
                     if name:
                         api_extracted_scorers[name] = api_extracted_scorers.get(name, 0) + 1
 
-    log.info(f"Processed {len(matches)} finished matches out of {len(raw_games)} total games")
-    DIAG["n_finished"] = len(matches)
+    # בניית תצוגת משחקים חיים — "ברזיל 1-1 מרוקו דקה 60"
+    live_displays = []
+    for game in raw_games:
+        if str(game.get("time_elapsed", "")).lower() != "live":
+            continue
+        home = _to_heb(game.get("home_team_name_en", "") or game.get("home_team_en", ""))
+        away = _to_heb(game.get("away_team_name_en", "") or game.get("away_team_en", ""))
+        if home == "TBD" or away == "TBD":
+            continue
+        hs = game.get("home_score", "0") or "0"
+        as_ = game.get("away_score", "0") or "0"
+        elapsed = game.get("elapsed", "") or game.get("minute", "") or ""
+        minute_str = f" דקה {elapsed}" if elapsed else ""
+        live_displays.append(f"{home} {hs}-{as_} {away}{minute_str}")
+
+    DIAG["live_displays"] = live_displays
+
+    live_team_names = set()
+    for m in live_matches:
+        live_team_names.add(m.home)
+        live_team_names.add(m.away)
+
+    log.info(f"Processed {len(matches)} finished/live matches out of {len(raw_games)} total games (live: {len(live_matches)})")
+    DIAG["n_finished"] = len([m for m in matches if m.finished])
+    DIAG["n_live"] = len(live_matches)
     DIAG["n_scorers"] = sum(api_extracted_scorers.values())
 
     # זיהוי עולות שלב לפי השתתפות בפועל במשחקי נוקאאוט בטורניר
@@ -228,11 +258,27 @@ def build_tournament_from_api() -> Tournament:
                 log.info(f"  Scorer Match: {heb_name} -> {api_player_name} ({goals} goals parsed)")
 
     t = Tournament(
-        matches=matches,
+        matches=matches,  # כולל משחקים חיים — הניקוד מתעדכן תוך כדי
         teams=teams,
         player_goals=player_goals,
         golden_boot=None,
+        live_teams=live_team_names,
     )
 
     log.info("Tournament mapping completed successfully from worldcup26.ir.")
     return t
+
+
+def _parse_match_live(game: dict):
+    """מנתח משחק חי — מחזיר Match עם finished=False לצורך סימון בלוח."""
+    home_raw = game.get("home_team_name_en", "") or game.get("home_team_en", "")
+    away_raw = game.get("away_team_name_en", "") or game.get("away_team_en", "")
+    home = _to_heb(home_raw)
+    away = _to_heb(away_raw)
+    if home == "TBD" or away == "TBD" or not home or not away:
+        return None
+    home_goals = int(game.get("home_score", 0) or 0)
+    away_goals = int(game.get("away_score", 0) or 0)
+    stage = _parse_stage(game)
+    return Match(home=home, away=away, home_goals=home_goals,
+                 away_goals=away_goals, stage=stage, finished=False)
