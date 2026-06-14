@@ -157,35 +157,52 @@ def score_participant(p: Picks, t: Tournament) -> dict:
     }
 
 
-def build_leaderboard(picks: list, t: Tournament, prev_rank: dict | None = None) -> list:
-    """מחזיר את הטבלה כפי שהפרונט יקרא מ-Supabase. ממוין לפי total יורד, עם תמיכה במיקומים זהים בתיקו."""
+def build_leaderboard(picks: list, t: Tournament, prev_state: dict | None = None) -> list:
+    """מחזיר את הטבלה כפי שהפרונט יקרא מ-Supabase. ממוין לפי total יורד.
+
+    prev_state: {name: {"rank": int, "movement": int}} — הדירוג וה-movement מהריצה הקודמת.
+    מדיניות movement: אם אף מיקום בטבלה לא השתנה מהריצה הקודמת — משאירים את ה-movement
+    הקיים (לא נוגעים). אם משהו כן זז — מחשבים movement חדש לכולם (מי שלא זז → 0).
+    """
     rows = [score_participant(p, t) for p in picks]
-    prev_rank = prev_rank or {}
-    
-    # מיון ראשוני: ניקוד יורד, ובתיקו — לפי הדירוג הקודם (לשמירת יציבות)
+    prev_state = prev_state or {}
+    prev_rank = {name: s["rank"] for name, s in prev_state.items()}
+
+    # מיון: ניקוד יורד, ובתיקו — לפי הדירוג הקודם (לשמירת יציבות)
     max_rank = len(rows) + 1
     rows.sort(key=lambda r: (-r["total"], prev_rank.get(r["name"], max_rank)))
-    
+
     now = datetime.now(timezone.utc).isoformat()
-    
-    # חישוב דירוג (Rank) חכם עם תמיכה בשוויון נקודות
+
+    # חישוב דירוג — standard competition ranking (1-2-3-3-3-6)
     for i, r in enumerate(rows):
         if i == 0:
-            # המשתתף הראשון תמיד מקום 1
             r["rank"] = 1
+        elif r["total"] == rows[i - 1]["total"]:
+            r["rank"] = rows[i - 1]["rank"]
         else:
-            # אם הניקוד שלו שווה בדיוק למשתתף שלפניו, הוא מקבל את אותו הדירוג
-            if r["total"] == rows[i - 1]["total"]:
-                r["rank"] = rows[i - 1]["rank"]
-            else:
-                # אחרת, הוא מקבל את המיקום הריאלי שלו ברשימה (אינדקס + 1)
-                r["rank"] = i + 1
-                
-        # חישוב תנועה (movement) ביחס לדירוג הישן
-        old = prev_rank.get(r["name"])
-        r["movement"] = 0 if old is None else old - r["rank"]   # חיובי = עלייה במיקום
+            r["rank"] = i + 1
         r["updated_at"] = now
-        
+
+    # האם מישהו זז? משווים את הדירוג החדש לקודם
+    any_change = any(
+        prev_rank.get(r["name"]) != r["rank"]
+        for r in rows
+        if r["name"] in prev_rank  # מתעלמים ממשתתפים חדשים שלא היו קודם
+    )
+
+    for r in rows:
+        old_rank = prev_rank.get(r["name"])
+        if old_rank is None:
+            # משתתף חדש שלא היה בטבלה — אין תנועה
+            r["movement"] = 0
+        elif any_change:
+            # מישהו זז → מחשבים מחדש לכולם (מי שלא זז → 0)
+            r["movement"] = old_rank - r["rank"]   # חיובי = עלייה
+        else:
+            # אף אחד לא זז → משאירים את ה-movement הקיים
+            r["movement"] = prev_state.get(r["name"], {}).get("movement", 0)
+
     return rows
 
 
