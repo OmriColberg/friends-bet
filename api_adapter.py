@@ -279,6 +279,6 @@ def _parse_match_live(game: dict):
         return None
     home_goals = int(game.get("home_score", 0) or 0)
     away_goals = int(game.get("away_score", 0) or 0)
-    stage = _parse_stage(game)
+    stage = STAGE_MAP.get(game.get("type", "group"), "group")
     return Match(home=home, away=away, home_goals=home_goals,
                  away_goals=away_goals, stage=stage, finished=False)
