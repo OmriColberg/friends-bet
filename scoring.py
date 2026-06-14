@@ -65,7 +65,7 @@ class Tournament:
     teams: dict = field(default_factory=dict)
     player_goals: dict = field(default_factory=dict)
     golden_boot: Optional[str] = None
-    live_teams: set = field(default_factory=set)  # נבחרות שמשחקות עכשיו — לסימון 🔴 בשמות
+    live_teams: set = field(default_factory=set)  # נבחרות שמשחקות עכשיו (לחישוב ניקוד חי)
 
 
 # ──────────────────────────── חוקי הניקוד ────────────────────────────
@@ -141,17 +141,14 @@ def score_participant(p: Picks, t: Tournament) -> dict:
     top = 0.5 * t.player_goals.get(p.top_scorer, 0) + (1 if t.golden_boot == p.top_scorer else 0)
 
     total = round(a + b + c + d + scorer + conceder + top, 1)
-    def _live(team: str) -> str:
-        return f"{team} 🔴" if team in t.live_teams else team
-
     return {
         "name": p.name,
-        "tier_a": _live(p.tier_a), "tier_a_pts": a,
-        "tier_b": _live(p.tier_b), "tier_b_pts": b,
-        "tier_c": _live(p.tier_c), "tier_c_pts": c,
-        "tier_d": _live(p.tier_d), "tier_d_pts": d,
-        "scorer": _live(p.scorer), "scorer_pts": scorer,
-        "conceder": _live(p.conceder), "conceder_pts": conceder,
+        "tier_a": p.tier_a, "tier_a_pts": a,
+        "tier_b": p.tier_b, "tier_b_pts": b,
+        "tier_c": p.tier_c, "tier_c_pts": c,
+        "tier_d": p.tier_d, "tier_d_pts": d,
+        "scorer": p.scorer, "scorer_pts": scorer,
+        "conceder": p.conceder, "conceder_pts": conceder,
         "topscorer": p.top_scorer, "topscorer_pts": top,
         "total": total,
     }
