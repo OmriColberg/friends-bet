@@ -81,6 +81,18 @@ def read_current_ranks() -> dict[str, dict]:
     return {r["name"]: {"rank": r["rank"], "movement": r.get("movement", 0) or 0} for r in raw}
 
 
+def read_baseline_ranks() -> dict:
+    """קורא את ה-baseline היציב (הדירוג מלפני שהמשחקים החיים התחילו) מ-live_status.
+    מחזיר {name: rank}. אם אין — מילון ריק."""
+    try:
+        raw = sb_get("live_status", {"select": "baseline_ranks", "id": "eq.1"})
+        if raw and raw[0].get("baseline_ranks"):
+            return raw[0]["baseline_ranks"]
+    except Exception as e:
+        log.warning(f"Could not read baseline_ranks (non-fatal): {e}")
+    return {}
+
+
 def read_current_max_total() -> float:
     """כמה 'מאוכלס' הלוח הקיים? משמש כשמירה מפני דריסה באפסים."""
     try:
@@ -138,8 +150,9 @@ def run():
             log.warning("No picks found, aborting")
             return
 
-        # 2. מצב קודם (rank + movement) + כמה הלוח הקיים מאוכלס (לשמירה)
+        # 2. מצב קודם (rank + movement) + baseline יציב + כמה הלוח מאוכלס
         prev_state = read_current_ranks()
+        baseline_rank = read_baseline_ranks()
         prev_max = read_current_max_total()
 
         # 3. מצב הטורניר מ-API — אם הקריאה נכשלה, מדלגים על הכתיבה כדי לא לאפס את הלוח
@@ -163,15 +176,21 @@ def run():
             return
 
         # 5. חישוב ניקוד + כתיבה
-        rows = build_leaderboard(picks, tournament, prev_state)
+        rows = build_leaderboard(picks, tournament, prev_state, baseline_rank)
         new_max = max((r["total"] for r in rows), default=0.0)
         sb_upsert("leaderboard", rows)
 
-        # 6. כתיבת סטטוס משחקים חיים לטבלת live_status
+        # 6. כתיבת סטטוס משחקים חיים + baseline לטבלת live_status
         live_displays = DIAG.get("live_displays", [])
+        has_live = bool(tournament.live_teams)
+        # ה-baseline מתעדכן רק כשאין משחקים חיים — כך הוא מחזיק את "המצב היציב האחרון".
+        # בזמן משחק חי משאירים את ה-baseline הישן (מלפני שהמשחק התחיל).
+        new_baseline = ({r["name"]: r["rank"] for r in rows}
+                        if not has_live else baseline_rank)
         sb_upsert("live_status", [{
             "id": 1,  # שורה יחידה — תמיד תידרס
             "matches": live_displays,
+            "baseline_ranks": new_baseline,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }])
         if live_displays:
