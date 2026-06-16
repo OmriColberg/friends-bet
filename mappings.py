@@ -113,7 +113,7 @@ PLAYER_HEB_TO_SEARCH = {
     "קיליאן אמבפה":     ["Mbappé", "Mbappe", "K. Mbappé", "K. Mbappe", "Kilian Ambaph", "Ambaph"],
     "הארי קיין":        ["Kane", "H. Kane", "Harry Kane"],
     "לאמין ימאל":       ["Yamal", "L. Yamal", "Lamine Yamal"],
-    "ארלינג האלנד":     ["Haaland", "E. Haaland", "Erling Haaland", "Håland"],
+    "ארלינג האלנד":     ["Haaland", "E. Haaland", "Erling Haaland", "Håland", "Arling Halnd", "Halnd"],
     "ליונל מסי":        ["Messi", "L. Messi", "Lionel Messi"],
     "מיקל אויארסבאל":  ["Oyarzabal", "M. Oyarzabal", "Mikel Oyarzabal"],
     "לאוטרו מרטינס":   ["Martínez", "Martinez", "L. Martínez", "Lautaro Martínez", "Lautaro Martinez"],
