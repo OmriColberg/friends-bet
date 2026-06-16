@@ -110,7 +110,7 @@ def team_heb_to_eng(heb_name: str) -> str:
 # שמות שחקנים: עברית → רשימת שמות אפשריים ב-API (שם משפחה / שם מלא)
 # ה-API מחזיר שמות בפורמטים שונים, אז נשמור כמה וריאציות ונעשה fuzzy match.
 PLAYER_HEB_TO_SEARCH = {
-    "קיליאן אמבפה":     ["Mbappé", "Mbappe", "K. Mbappé", "K. Mbappe"],
+    "קיליאן אמבפה":     ["Mbappé", "Mbappe", "K. Mbappé", "K. Mbappe", "Kilian Ambaph", "Ambaph"],
     "הארי קיין":        ["Kane", "H. Kane", "Harry Kane"],
     "לאמין ימאל":       ["Yamal", "L. Yamal", "Lamine Yamal"],
     "ארלינג האלנד":     ["Haaland", "E. Haaland", "Erling Haaland", "Håland"],
