@@ -257,6 +257,14 @@ def build_tournament_from_api() -> Tournament:
                 player_goals[heb_name] += goals
                 log.info(f"  Scorer Match: {heb_name} -> {api_player_name} ({goals} goals parsed)")
 
+    # ───── תיקון זמני (להסיר אחרי משחק אנגליה-קרואטיה 17/06) ─────
+    # ה-API דילג על הגול של קיין בדקה 12. מוסיפים +1 ידנית עד שה-API יתקן.
+    # התנאי: רק כל עוד אנגליה במשחק חי (כדי שלא יישאר תקוע אחרי שהמשחק נגמר).
+    if "אנגליה" in live_team_names:
+        player_goals["הארי קיין"] = player_goals.get("הארי קיין", 0) + 1
+        log.warning("  [TEMP PATCH] +1 goal added to הארי קיין (API skipped his 12' goal)")
+    # ──────────────────────────────────────────────────────────────
+
     t = Tournament(
         matches=matches,  # כולל משחקים חיים — הניקוד מתעדכן תוך כדי
         teams=teams,
