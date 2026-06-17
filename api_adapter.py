@@ -257,12 +257,22 @@ def build_tournament_from_api() -> Tournament:
                 player_goals[heb_name] += goals
                 log.info(f"  Scorer Match: {heb_name} -> {api_player_name} ({goals} goals parsed)")
 
-    # ───── תיקון זמני (להסיר אחרי משחק אנגליה-קרואטיה 17/06) ─────
-    # ה-API דילג על הגול של קיין בדקה 12. מוסיפים +1 ידנית עד שה-API יתקן.
-    # התנאי: רק כל עוד אנגליה במשחק חי (כדי שלא יישאר תקוע אחרי שהמשחק נגמר).
-    if "אנגליה" in live_team_names:
-        player_goals["הארי קיין"] = player_goals.get("הארי קיין", 0) + 1
-        log.warning("  [TEMP PATCH] +1 goal added to הארי קיין (API skipped his 12' goal)")
+    # ───── תיקון זמני למשחק אנגליה-קרואטיה (id=22, 17/06) ─────
+    # ה-API דילג על הגול של קיין בדקה 12. בודקים כמה פעמים קיין מופיע
+    # ספציפית בכובשי משחק 22 — אם פחות מ-2, מוסיפים את ההפרש.
+    kane_goals_match22 = 0
+    for game in raw_games:
+        if str(game.get("id")) == "22":
+            scorers_str = game.get("home_scorers", "") or ""
+            for entry in scorers_str.strip("{}").split('","'):
+                entry_clean = re.sub(r"\s+\d+['′+]?\d*['′]?\s*$", "", entry.strip().strip('"').strip("'")).strip()
+                if match_player(entry_clean, "הארי קיין"):
+                    kane_goals_match22 += 1
+            break
+    kane_missing = 2 - kane_goals_match22
+    if kane_missing > 0:
+        player_goals["הארי קיין"] = player_goals.get("הארי קיין", 0) + kane_missing
+        log.warning(f"  [TEMP PATCH] +{kane_missing} goal(s) for הארי קיין in match 22 (API shows {kane_goals_match22}/2)")
     # ──────────────────────────────────────────────────────────────
 
     t = Tournament(
